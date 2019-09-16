@@ -1,3 +1,7 @@
 # 100pct200pct300pct
 
-ctrade bot with news web crawler
+ctrade bot with momentum grid
+
+todo
+- เปิด position ตาม trend
+- รวบโซน
