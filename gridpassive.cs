@@ -10,8 +10,8 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.None)]
     public class GRIDPASSIVE : Robot
     {
-        [Parameter("Initial Volumn (pip)", DefaultValue = 0.01, MaxValue = 1)]
-        public double InitialPip { get; set; }
+        [Parameter("Position Size (pip)", DefaultValue = 0.01, MaxValue = 1)]
+        public double PositionSize { get; set; }
 
         [Parameter("Pip Step", DefaultValue = 20, MinValue = 20)]
         public double PipStep { get; set; }
@@ -22,25 +22,50 @@ namespace cAlgo.Robots
         [Parameter("Grid Upper Bound", DefaultValue = 0.0)]
         public double UpperBound { get; set; }
 
+        [Parameter("RSI period", DefaultValue = 9)]
+        public int rsiPeriod { get; set; }
+
+        [Parameter("RSI Threshold", DefaultValue = 50)]
+        public int rsiStrengthThreshold { get; set; }
+
+        //[Parameter("Grid Lower Bound", DefaultValue = 0.0)]
+        //public double LowerBound { get; set; }
+
+        //Parameter("Bias Direction", DefaultValue = TradeType.Buy)]
+        //public TradeType BiasDirection { get; set; }
+
         int[] Inventory;
         Random RAND = new Random();
         double prevPrice = -1;
         double nowPrice = -1;
         double LowerBound;
+
+        RelativeStrengthIndex rsi;
+
         protected override void OnStart()
         {
+
+            rsi = Indicators.RelativeStrengthIndex(MarketSeries.Close, rsiPeriod);
+            LowerBound = UpperBound - MaxPosition * PipStep * Symbol.PipSize;
+
             Positions.Closed += PositionsOnClosed;
             DrawGridLine(UpperBound);
+            // use index as zone +1
             Inventory = new int[MaxPosition + 1];
-            LowerBound = UpperBound - MaxPosition * PipStep * Symbol.PipSize;
+
         }
 
         private void PositionsOnClosed(PositionClosedEventArgs args)
         {
             var position = args.Position;
-            Print("Position closed with {0} profit", position.GrossProfit);
+            //Print("Position closed with {0} profit", position.GrossProfit);
             var zoneth = Int32.Parse((position.Label.Split('_')[1]));
-            Inventory[zoneth]--;
+            var counter_skip = Int32.Parse((position.Label.Split('_')[2]));
+
+            for (int i = 0; i < counter_skip; i++)
+            {
+                Inventory[zoneth + i] = 0;
+            }
         }
 
         protected override void OnTick()
@@ -48,28 +73,50 @@ namespace cAlgo.Robots
 
             //Print(prevPrice, " - ", nowPrice);
             prevPrice = nowPrice;
-            nowPrice = Symbol.Bid;
+            nowPrice = Symbol.Ask;
             if (prevPrice == -1)
                 return;
 
-            // Inventoryeachzone
-
             int zoneth = calculateInventoryZone(nowPrice);
-            if (!IsReachMaxPositionPerZone(zoneth))
-            {
+            if (IsReachMaxPositionPerZone(zoneth) || zoneth == -1)
+                return;
 
-                if (CheckPricePassMidZone(nowPrice, prevPrice, zoneth))
+
+            if (CheckPricePassMidZone(nowPrice, prevPrice, zoneth))
+            {
+                bool IsNotHighBuyMomentum = (rsi.Result.LastValue < rsiStrengthThreshold) ? true : false;
+                if (IsNotHighBuyMomentum)
                 {
-                    // debug
+
+                    // mark now collection
+                    Inventory[zoneth] = 1;
+                    // mark skipped collection
+                    int count_skip = 1;
+                    int zoneth_tmp = zoneth + 1;
+                    while (Inventory[zoneth_tmp] == -1)
+                    {
+                        count_skip++;
+                        if (Inventory[zoneth_tmp] == -1)
+                            Inventory[zoneth_tmp] = 1;
+                        zoneth_tmp++;
+                    }
+
+                    ExecuteMarketOrder(TradeType.Sell, Symbol, Symbol.QuantityToVolumeInUnits(PositionSize) * count_skip, "posInZone_" + zoneth + "_" + count_skip, 100000, PipStep);
+                    Print("collect position at zone ", zoneth, " x", count_skip);
+                    // debug                    
                     //var randomName = "tickPassMiddleGrid_" + RAND.NextDouble().ToString() + RAND.NextDouble().ToString();
                     //Chart.DrawVerticalLine(randomName, Server.Time, Color.Red);
                     //Chart.DrawHorizontalLine(randomName, nowPrice, Color.Goldenrod, 3, LineStyle.DotsVeryRare);
-
-                    // collect position
-                    ExecuteMarketOrder(TradeType.Buy, Symbol, Symbol.QuantityToVolumeInUnits(InitialPip), "posInZone_" + zoneth, 100000, PipStep);
-                    Print("collect position at zone ", zoneth);
-                    Inventory[zoneth]++;
                 }
+                else
+                {
+                    // mark counter skip
+                    if (Inventory[zoneth] == 0)
+                    {
+                        Inventory[zoneth] = -1;
+                    }
+                }
+
             }
         }
 
@@ -78,17 +125,19 @@ namespace cAlgo.Robots
             // Put your deinitialization logic here
             foreach (int i in Inventory)
             {
-                Print(Inventory.GetValue(i), " - ");
+                //Print(Inventory.GetValue(i), " - ");
             }
         }
 
         void DrawGridLine(double UpperBound)
         {
-            for (int i = 0; i < MaxPosition; i++)
+            for (int i = 0; i < MaxPosition + 1; i++)
             {
-                Chart.DrawHorizontalLine("grid_" + i, UpperBound - i * PipStep * Symbol.PipSize, Color.Gray);
+                var yAxis = UpperBound - i * PipStep * Symbol.PipSize;
+                Chart.DrawHorizontalLine("grid_" + i, yAxis, Color.Gray);
             }
         }
+
         bool CheckPricePassMidZone(double currentPrice, double prevPrice, int zoneth)
         {
             if (currentPrice > UpperBound || currentPrice < LowerBound)
@@ -104,10 +153,14 @@ namespace cAlgo.Robots
         int calculateInventoryZone(double price)
         {
             int zoneth = 0;
+
             while ((UpperBound - PipStep * zoneth * Symbol.PipSize) > price)
             {
                 zoneth++;
             }
+            //out of zone
+            if (zoneth > MaxPosition)
+                zoneth = -1;
             return zoneth;
         }
 
@@ -118,7 +171,9 @@ namespace cAlgo.Robots
 
         bool IsReachMaxPositionPerZone(int zoneth)
         {
-            if (Inventory[zoneth] == 0)
+            if (zoneth < 1 || zoneth > MaxPosition)
+                return true;
+            if (Inventory[zoneth] < 1)
                 return false;
             else
                 return true;
