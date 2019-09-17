@@ -3,5 +3,4 @@
 ctrade bot with momentum grid
 
 todo
-- เปิด position ตาม trend
-- รวบโซน
+- flex zone height
