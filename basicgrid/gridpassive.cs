@@ -5,34 +5,31 @@ using cAlgo.API.Indicators;
 using cAlgo.API.Internals;
 using cAlgo.Indicators;
 
+
+// TODO flex height each level by volatolity
 namespace cAlgo.Robots
 {
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.None)]
     public class GRIDPASSIVE : Robot
     {
-        [Parameter("Position Size (pip)", DefaultValue = 0.01, MaxValue = 1)]
+        [Parameter("Position Size (pip)", DefaultValue = 0.01, MaxValue = 1, Group = "Position")]
         public double PositionSize { get; set; }
-
-        [Parameter("Pip Step", DefaultValue = 20, MinValue = 20)]
+        [Parameter("Pip Step", DefaultValue = 10, MinValue = 10, Group = "Position")]
         public double PipStep { get; set; }
+        [Parameter("Take Profit (ratio pip step)", DefaultValue = 1.0, MinValue = 0.1, Group = "Position")]
+        public double TpRatio { get; set; }
 
-        [Parameter("Max Position", DefaultValue = 50, MinValue = 1)]
+        [Parameter("Grid Upper Bound", DefaultValue = 0.0, Group = "Grid Spec")]
+        public double UpperBound { get; set; }
+        [Parameter("Max Position", DefaultValue = 50, MinValue = 1, Group = "Grid Spec")]
         public int MaxPosition { get; set; }
 
-        [Parameter("Grid Upper Bound", DefaultValue = 0.0)]
-        public double UpperBound { get; set; }
 
-        [Parameter("RSI period", DefaultValue = 9)]
-        public int rsiPeriod { get; set; }
 
-        [Parameter("RSI Threshold", DefaultValue = 50)]
-        public int rsiStrengthThreshold { get; set; }
-
-        //[Parameter("Grid Lower Bound", DefaultValue = 0.0)]
-        //public double LowerBound { get; set; }
-
-        //Parameter("Bias Direction", DefaultValue = TradeType.Buy)]
-        //public TradeType BiasDirection { get; set; }
+        [Parameter("period", DefaultValue = 9, Group = "Open Position Signal")]
+        public int hvPeriod { get; set; }
+        [Parameter("bar history", DefaultValue = 200, Group = "Open Position Signal")]
+        public int hvBarHistory { get; set; }
 
         int[] Inventory;
         Random RAND = new Random();
@@ -40,12 +37,13 @@ namespace cAlgo.Robots
         double nowPrice = -1;
         double LowerBound;
 
-        RelativeStrengthIndex rsi;
+        HistoricalVolatility hv;
 
         protected override void OnStart()
         {
 
-            rsi = Indicators.RelativeStrengthIndex(MarketSeries.Close, rsiPeriod);
+            hv = Indicators.HistoricalVolatility(MarketSeries.Close, hvPeriod, hvBarHistory);
+
             LowerBound = UpperBound - MaxPosition * PipStep * Symbol.PipSize;
 
             Positions.Closed += PositionsOnClosed;
@@ -68,10 +66,8 @@ namespace cAlgo.Robots
             }
         }
 
-        protected override void OnTick()
+        protected override void OnBar()
         {
-
-            //Print(prevPrice, " - ", nowPrice);
             prevPrice = nowPrice;
             nowPrice = Symbol.Ask;
             if (prevPrice == -1)
@@ -84,49 +80,41 @@ namespace cAlgo.Robots
 
             if (CheckPricePassMidZone(nowPrice, prevPrice, zoneth))
             {
-                bool IsNotHighBuyMomentum = (rsi.Result.LastValue < rsiStrengthThreshold) ? true : false;
-                if (IsNotHighBuyMomentum)
-                {
-
-                    // mark now collection
-                    Inventory[zoneth] = 1;
-                    // mark skipped collection
-                    int count_skip = 1;
-                    int zoneth_tmp = zoneth + 1;
-                    while (Inventory[zoneth_tmp] == -1)
-                    {
-                        count_skip++;
-                        if (Inventory[zoneth_tmp] == -1)
-                            Inventory[zoneth_tmp] = 1;
-                        zoneth_tmp++;
-                    }
-
-                    ExecuteMarketOrder(TradeType.Sell, Symbol, Symbol.QuantityToVolumeInUnits(PositionSize) * count_skip, "posInZone_" + zoneth + "_" + count_skip, 100000, PipStep);
-                    Print("collect position at zone ", zoneth, " x", count_skip);
-                    // debug                    
-                    //var randomName = "tickPassMiddleGrid_" + RAND.NextDouble().ToString() + RAND.NextDouble().ToString();
-                    //Chart.DrawVerticalLine(randomName, Server.Time, Color.Red);
-                    //Chart.DrawHorizontalLine(randomName, nowPrice, Color.Goldenrod, 3, LineStyle.DotsVeryRare);
-                }
-                else
+                bool IsNotHighVolatility = (hv.Result.IsFalling()) ? true : false;
+                if (!IsNotHighVolatility)
                 {
                     // mark counter skip
                     if (Inventory[zoneth] == 0)
                     {
                         Inventory[zoneth] = -1;
                     }
+                    return;
                 }
 
+                // mark now collection
+                Inventory[zoneth] = 1;
+                // mark skipped collection
+                int count_skip = 1;
+                int zoneth_tmp = zoneth + 1;
+                while (Inventory[zoneth_tmp] == -1)
+                {
+                    count_skip++;
+                    if (Inventory[zoneth_tmp] == -1)
+                        Inventory[zoneth_tmp] = 1;
+                    zoneth_tmp++;
+                }
+
+                ExecuteMarketOrder(TradeType.Buy, SymbolName, Symbol.QuantityToVolumeInUnits(PositionSize) * count_skip, "posInZone_" + zoneth + "_" + count_skip, 100000, PipStep * TpRatio);
+                Print("collect position at zone ", zoneth, " x", count_skip);
+                // debug                    
+                //var randomName = "tickPassMiddleGrid_" + RAND.NextDouble().ToString() + RAND.NextDouble().ToString();
+                //Chart.DrawVerticalLine(randomName, Server.Time, Color.Red);
+                //Chart.DrawHorizontalLine(randomName, nowPrice, Color.Goldenrod, 3, LineStyle.DotsVeryRare);
             }
         }
 
         protected override void OnStop()
         {
-            // Put your deinitialization logic here
-            foreach (int i in Inventory)
-            {
-                //Print(Inventory.GetValue(i), " - ");
-            }
         }
 
         void DrawGridLine(double UpperBound)
